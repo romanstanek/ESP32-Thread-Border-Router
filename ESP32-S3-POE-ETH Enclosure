@@ -1,0 +1,310 @@
+# FreeCAD Macro: ESP32-S3-POE-ETH Enclosure (Clean v8 — Screw/Snap Lid + Base Side Vents + XIAO Tabs)
+# Parametric tray enclosure for Waveshare ESP32-S3-POE-ETH with optional corner tabs for Seeed XIAO ESP32-C6.
+# • Modes: screw-down lid OR snap-fit lid
+# • RJ45-only front cutout; PoE-aware internal height
+# • Two vent rows near the TOP of both long base walls
+# • XIAO board held by four corner push-in tabs
+# • Boards auto-placed with fixed spacing (Y-axis), main PCB pushed to RJ45/front wall (X+)
+# FreeCAD 0.20/0.21 (Part WB). Run → creates solids: Base, Lid.
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+try:
+    import Draft
+except Exception:
+    Draft = None
+
+# =====================
+# Mode & Footprint
+# =====================
+FASTENER_MODE = "screw"     # "screw" or "snap"
+BASE_LEN = 100.0
+BASE_W   = 60.0
+BASE_H   = 30.0             # fixed outer base height (Z)
+
+# =====================
+# Walls / plates
+# =====================
+WALL  = 2.0
+FLOOR = 2.4
+LID_T = 2.0
+
+# =====================
+# ESP32-S3-POE-ETH (main board)
+# =====================
+BOARD_LEN = 72.80
+BOARD_W_MAX = 21.00
+BOARD_THICK = 1.60
+HOLE_X_LEFT = 1.58
+HOLE_HORIZ_PITCH = 54.15
+HOLE_X_RIGHT = HOLE_X_LEFT + HOLE_HORIZ_PITCH
+HOLE_Y_TOP = 1.37
+HOLE_VERT_PITCH = 18.25
+
+CLEAR_X = 0.60
+CLEAR_Y = 0.60
+CLEAR_TOP = 3.00
+
+STANDOFF_OD = 5.0
+STANDOFF_H  = 2.5
+
+COMPONENT_MAX_ABOVE_PCB = 6.0
+RJ45_ABOVE_PCB = 13.0
+POE_ABOVE_RJ45 = 6.0
+
+RJ45_W = 16.0
+RJ45_H = 14.0
+RJ45_TOL_W = 0.5
+RJ45_TOL_H = 0.5
+# Alignment parameters for RJ45 cutout (Y relative to PCB TOP edge)
+RJ45_CENTER_Y = BOARD_W_MAX/2.0   # override if jack not centered
+RJ45_Y_ADJUST = 0.0               # + moves down, - up
+
+# =====================
+# Screw-down lid parameters
+# =====================
+BOSS_OD = 6.0
+BOSS_H  = 8.0
+BOSS_MARGIN = 7.0
+SCREW_NOMINAL = 1.6
+PILOT = 1.3
+LID_CLEAR = 1.9
+
+# =====================
+# Snap-fit parameters
+# =====================
+SNAP_RIDGE_T = 0.8
+SNAP_RIDGE_H = 1.2
+SNAP_Z_OFFSET = 0.2
+LIP_H_MIN = 2.0
+PRY_NOTCH_W = 8.0
+PRY_NOTCH_H = 2.0
+PRY_NOTCH_DEPTH = 1.2
+
+# =====================
+# Base side vents (two long sides) — two rows near the TOP of walls
+# =====================
+VENTS_ENABLED = True
+VENT_COLS = 12
+VENT_ROWS = 2                 # two horizontal rows per side
+VENT_SLOT_W = 5.0
+VENT_SLOT_H = 2.0
+VENT_GAP_X  = 3.0             # spacing between slots along length
+VENT_ROW_GAP_Z = 3.0          # vertical gap between the two rows
+VENT_TOP_MARGIN = 2.0         # distance down from the very top of wall to top row
+VENT_MARGIN = 6.0             # horizontal margin from corners
+
+# =====================
+# XIAO ESP32-C6 corner tabs
+# =====================
+XIAO_ENABLE = True
+XIAO_LEN = 21.0
+XIAO_W   = 17.8
+XIAO_CLEAR = 0.25
+TAB_W = 2.0
+TAB_L = 3.0
+TAB_H = 1.5
+
+# =====================
+# Boards auto-spacing (Y axis)
+# =====================
+BOARD_SPACING = 5.0   # gap between main board and XIAO board (mm)
+
+# =====================
+# Helpers
+# =====================
+
+def ensure_doc(name="ESP32S3_POE_ETH_CleanV8"):
+    if App.ActiveDocument is None or App.ActiveDocument.Name != name:
+        return App.newDocument(name)
+    return App.ActiveDocument
+
+
+def add_obj(shape, label):
+    o = App.ActiveDocument.addObject("Part::Feature", label)
+    o.Shape = shape
+    return o
+
+# =====================
+# Build
+# =====================
+
+doc = ensure_doc()
+for o in list(doc.Objects):
+    doc.removeObject(o.Name)
+
+# Derived sizes
+TALLEST_ABOVE_PCB = max(COMPONENT_MAX_ABOVE_PCB, RJ45_ABOVE_PCB + POE_ABOVE_RJ45)
+req_inner_len = BOARD_LEN + 2*CLEAR_X
+req_inner_w   = BOARD_W_MAX + 2*CLEAR_Y
+req_inner_h   = STANDOFF_H + BOARD_THICK + TALLEST_ABOVE_PCB + CLEAR_TOP  # info only
+
+# Inner cavity fixed by outer dims; base fully open to top
+inner_len = max(req_inner_len, BASE_LEN - 2*WALL)
+inner_w   = max(req_inner_w,   BASE_W   - 2*WALL)
+base_h    = BASE_H
+inner_h   = base_h - FLOOR  # ensure fully open cavity
+
+# Base shell with inner cavity
+outer = Part.makeBox(BASE_LEN, BASE_W, base_h)
+inner = Part.makeBox(BASE_LEN - 2*WALL, BASE_W - 2*WALL, inner_h).translate(App.Vector(WALL, WALL, FLOOR))
+tray = outer.cut(inner)
+
+# Inner cavity bounds
+INNER_X0 = WALL
+INNER_Y0 = WALL
+INNER_X1 = BASE_LEN - WALL
+INNER_Y1 = BASE_W  - WALL
+INNER_W  = INNER_X1 - INNER_X0
+INNER_H  = INNER_Y1 - INNER_Y0
+
+# === Auto-placement ===
+# X placement: main PCB against RJ45/front wall (X+); XIAO centered in X
+board_x = INNER_X1 - CLEAR_X - BOARD_LEN
+xiao_x_area = XIAO_LEN + 2*XIAO_CLEAR
+xiao_x = INNER_X0 + (INNER_W - xiao_x_area)/2.0 + XIAO_CLEAR
+
+# Y placement: center the combined stack with fixed spacing
+board_span_y = BOARD_W_MAX + 2*CLEAR_Y
+xiao_span_y  = XIAO_W      + 2*XIAO_CLEAR
+required_stack = board_span_y + BOARD_SPACING + xiao_span_y
+
+eff_spacing = BOARD_SPACING
+if required_stack > INNER_H:
+    eff_spacing = max(0.0, INNER_H - (board_span_y + xiao_span_y))
+    print(f"[warn] Vertical space tight: reducing spacing from {BOARD_SPACING} to {eff_spacing:.2f} mm")
+
+start_y = INNER_Y0 + (INNER_H - (board_span_y + eff_spacing + xiao_span_y)) / 2.0
+# Order: main on top, XIAO below (swap if desired)
+board_y = start_y + CLEAR_Y
+xiao_y  = board_y + BOARD_W_MAX + eff_spacing + (XIAO_CLEAR - CLEAR_Y)
+
+# Final origins
+pcb_origin     = App.Vector(board_x, board_y, FLOOR + STANDOFF_H)
+XIAO_PLACED_AT = (xiao_x, xiao_y)
+
+# Standoffs under mounting holes
+holes = [
+    (HOLE_X_LEFT,  HOLE_Y_TOP),
+    (HOLE_X_LEFT,  HOLE_Y_TOP + HOLE_VERT_PITCH),
+    (HOLE_X_RIGHT, HOLE_Y_TOP),
+    (HOLE_X_RIGHT, HOLE_Y_TOP + HOLE_VERT_PITCH),
+]
+for (hx, hy) in holes:
+    ex = pcb_origin.x + hx
+    ey = pcb_origin.y + hy
+    post = Part.makeCylinder(STANDOFF_OD/2.0, STANDOFF_H, App.Vector(ex, ey, FLOOR), App.Vector(0,0,1))
+    tray = tray.fuse(post)
+
+# RJ45 mouth cutout in front wall (X+), aligned to RJ45 center on PCB
+mouth_w = RJ45_W + RJ45_TOL_W
+mouth_h = RJ45_H + RJ45_TOL_H
+mouth_depth = WALL + 1.0
+mouth_x = BASE_LEN - mouth_depth
+mouth_y = board_y + RJ45_CENTER_Y + RJ45_Y_ADJUST - (mouth_w/2.0)
+pcb_top_z = FLOOR + STANDOFF_H + BOARD_THICK
+mouth_center_z = pcb_top_z + RJ45_ABOVE_PCB/2.0
+mouth_z = mouth_center_z - mouth_h/2.0
+mouth = Part.makeBox(mouth_depth, mouth_w, mouth_h).translate(App.Vector(mouth_x, mouth_y, mouth_z))
+tray = tray.cut(mouth)
+
+# Screw bosses or snap groove
+if FASTENER_MODE == "screw":
+    bx1 = WALL + BOSS_MARGIN
+    bx2 = BASE_LEN - WALL - BOSS_MARGIN
+    by1 = WALL + BOSS_MARGIN
+    by2 = BASE_W  - WALL - BOSS_MARGIN
+    boss_centers = [(bx1, by1), (bx2, by1), (bx2, by2), (bx1, by2)]
+    for (bx, by) in boss_centers:
+        boss = Part.makeCylinder(BOSS_OD/2.0, BOSS_H, App.Vector(bx, by, FLOOR), App.Vector(0,0,1))
+        tray = tray.fuse(boss)
+        pilot = Part.makeCylinder(PILOT/2.0, BOSS_H, App.Vector(bx, by, FLOOR), App.Vector(0,0,1))
+        tray = tray.cut(pilot)
+else:
+    groove = Part.makeBox(BASE_LEN, BASE_W, SNAP_RIDGE_H)
+    groove_z = FLOOR + inner_h - SNAP_RIDGE_H - SNAP_Z_OFFSET
+    groove = groove.translate(App.Vector(0, 0, groove_z))
+    tray = tray.cut(groove)
+    notch_x = (BASE_LEN - PRY_NOTCH_W)/2.0
+    notch_z = FLOOR + inner_h - (SNAP_RIDGE_H + 0.6)
+    pry_left  = Part.makeBox(PRY_NOTCH_W, PRY_NOTCH_DEPTH, PRY_NOTCH_H).translate(App.Vector(notch_x, 0, notch_z))
+    tray = tray.cut(pry_left)
+    pry_right = Part.makeBox(PRY_NOTCH_W, PRY_NOTCH_DEPTH, PRY_NOTCH_H).translate(App.Vector(notch_x, BASE_W - PRY_NOTCH_DEPTH, notch_z))
+    tray = tray.cut(pry_right)
+
+# XIAO corner tabs — use computed placement
+if XIAO_ENABLE:
+    x0 = max(INNER_X0, min(XIAO_PLACED_AT[0], INNER_X1 - XIAO_LEN))
+    y0 = max(INNER_Y0, min(XIAO_PLACED_AT[1], INNER_Y1 - XIAO_W))
+    tab_z = FLOOR + STANDOFF_H + BOARD_THICK
+    tabs = []
+    tabs.append(Part.makeBox(TAB_L, TAB_W, TAB_H).translate(App.Vector(x0 - TAB_L, y0, tab_z)))
+    tabs.append(Part.makeBox(TAB_L, TAB_W, TAB_H).translate(App.Vector(x0 + XIAO_LEN, y0, tab_z)))
+    tabs.append(Part.makeBox(TAB_L, TAB_W, TAB_H).translate(App.Vector(x0 - TAB_L, y0 + XIAO_W - TAB_W, tab_z)))
+    tabs.append(Part.makeBox(TAB_L, TAB_W, TAB_H).translate(App.Vector(x0 + XIAO_LEN, y0 + XIAO_W - TAB_W, tab_z)))
+    for t in tabs:
+        tray = tray.fuse(t)
+
+# Side vents on base (two rows near top of left/right walls)
+if VENTS_ENABLED:
+    slot_total_w = VENT_COLS*VENT_SLOT_W + (VENT_COLS-1)*VENT_GAP_X
+    vx0 = max(VENT_MARGIN, (BASE_LEN - slot_total_w)/2.0)
+    z_top = FLOOR + inner_h - VENT_TOP_MARGIN - VENT_SLOT_H
+    z_row = [z_top, z_top - (VENT_SLOT_H + VENT_ROW_GAP_Z)]
+    for c in range(VENT_COLS):
+        sx = vx0 + c*(VENT_SLOT_W + VENT_GAP_X)
+        for z in z_row:
+            vent_left = Part.makeBox(VENT_SLOT_W, WALL+0.12, VENT_SLOT_H).translate(App.Vector(sx, 0, z))
+            tray = tray.cut(vent_left)
+            vent_right = Part.makeBox(VENT_SLOT_W, WALL+0.12, VENT_SLOT_H).translate(App.Vector(sx, BASE_W - WALL, z))
+            tray = tray.cut(vent_right)
+
+base_obj = add_obj(tray, "Base")
+
+# Lid
+lid_outer = Part.makeBox(BASE_LEN, BASE_W, LID_T)
+if FASTENER_MODE == "screw":
+    lid = lid_outer
+    bx1 = WALL + BOSS_MARGIN
+    bx2 = BASE_LEN - WALL - BOSS_MARGIN
+    by1 = WALL + BOSS_MARGIN
+    by2 = BASE_W  - WALL - BOSS_MARGIN
+    boss_centers = [(bx1, by1), (bx2, by1), (bx2, by2), (bx1, by2)]
+    for (bx, by) in boss_centers:
+        th = Part.makeCylinder(LID_CLEAR/2.0, LID_T, App.Vector(bx, by, 0), App.Vector(0,0,1))
+        lid = lid.cut(th)
+else:
+    lip_len = BASE_LEN - 2*WALL
+    lip_w   = BASE_W  - 2*WALL
+    lip_h   = max(LIP_H_MIN, SNAP_RIDGE_H + 0.6)
+    lip = Part.makeBox(lip_len, lip_w, lip_h).translate(App.Vector(WALL, WALL, 0))
+    lid = lid_outer.fuse(lip)
+    ridge_outer = Part.makeBox(lip_len + 2*SNAP_RIDGE_T, lip_w + 2*SNAP_RIDGE_T, SNAP_RIDGE_H)
+    ridge_inner = Part.makeBox(lip_len, lip_w, SNAP_RIDGE_H)
+    ridge = ridge_outer.cut(ridge_inner)
+    ridge = ridge.translate(App.Vector(WALL - SNAP_RIDGE_T, WALL - SNAP_RIDGE_T, LID_T + (lip_h - SNAP_RIDGE_H)))
+    lid = lid.fuse(ridge)
+
+lid_obj = add_obj(lid, "Lid")
+
+# Visualization aids (board outlines)
+try:
+    board_vis = Part.makeBox(BOARD_LEN, BOARD_W_MAX, 0.2).translate(App.Vector(board_x, board_y, FLOOR + STANDOFF_H + BOARD_THICK))
+    add_obj(board_vis, "Vis_MainPCB")
+    xiao_vis = Part.makeBox(XIAO_LEN, XIAO_W, 0.2).translate(App.Vector(XIAO_PLACED_AT[0], XIAO_PLACED_AT[1], FLOOR + STANDOFF_H + BOARD_THICK))
+    add_obj(xiao_vis, "Vis_XIAO")
+except Exception:
+    pass
+
+App.ActiveDocument.recompute()
+Gui.ActiveDocument.ActiveView.fitAll()
+
+# Report
+print(f"Mode: {FASTENER_MODE}")
+print(f"Base outer: {BASE_LEN} x {BASE_W} x {base_h:.2f} mm (LxWxH)")
+print(f"Main PCB origin: ({board_x:.2f}, {board_y:.2f}) mm; XIAO origin: ({XIAO_PLACED_AT[0]:.2f}, {XIAO_PLACED_AT[1]:.2f}) mm; spacing = {BOARD_SPACING} mm")
+print(f"RJ45 cutout: {(RJ45_W+RJ45_TOL_W):.2f} (W) x {(RJ45_H+RJ45_TOL_H):.2f} (H) at Zcenter={mouth_center_z:.2f}")
+if VENTS_ENABLED:
+    print(f"Base side vents: {VENT_ROWS} rows × {VENT_COLS} cols per side; slot {VENT_SLOT_W}x{VENT_SLOT_H} mm; top margin {VENT_TOP_MARGIN} mm; row gap {VENT_ROW_GAP_Z} mm")
+print("Enclosure generated.")
